@@ -19,7 +19,6 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        # 获取完整历史记录，这样我们可以正确更新 README
         fetch-depth: 0
     
     - name: Set up Python
@@ -33,58 +32,102 @@ jobs:
         pip install requests beautifulsoup4
     
     - name: Run crawler
-      run: python crawler.py
+      id: run-crawler
+      run: |
+        python crawler.py
+        
+        # 检查是否有资源包被下载
+        if git status --porcelain | grep -E "resource_pack/|sha256/" | grep -v ".commit$" | grep -v ".md5$" | grep ".zip$"; then
+          echo "resource_pack_changed=true" >> $GITHUB_OUTPUT
+        else
+          echo "resource_pack_changed=false" >> $GITHUB_OUTPUT
+        fi
     
     - name: Configure Git
       run: |
         git config --global user.name 'GitHub Actions'
         git config --global user.email 'actions@github.com'
     
-    - name: Update README timestamp
-      id: update-readme
+    - name: Generate README from template
+      id: generate-readme
       run: |
         # 设置时区为东八区（北京时间）
         export TZ='Asia/Shanghai'
         
-        # 获取当前时间（格式：YYYY-MM-DD HH:MM:SS UTC+8）
+        # 获取当前时间
         CURRENT_TIME=$(date +'%Y-%m-%d %H:%M:%S UTC+8')
         echo "current_time=$CURRENT_TIME" >> $GITHUB_OUTPUT
         
-        # 更新 README.md 中的时间戳
-        if [ -f README.md ]; then
-          # 备份原文件
-          cp README.md README.md.backup
+        # 检查README模板文件是否存在
+        if [ ! -f README_TEMPLATE.md ]; then
+          echo "README_TEMPLATE.md not found, creating default template"
           
-          # 使用 sed 替换时间戳标记
-          # 假设 README.md 中有类似这样的标记：最后更新时间：<!-- UPDATE_TIMESTAMP -->
-          sed -i "s/最后更新时间：<!-- UPDATE_TIMESTAMP -->/最后更新时间：$CURRENT_TIME/g" README.md
+          # 创建默认模板
+          cat > README_TEMPLATE.md << 'EOF'
+# Minecraft 模组汉化资源包仓库
+
+## 仓库信息
+- **最后更新时间**: {{UPDATE_TIME}}
+- **自动更新频率**: 每2小时
+- **资源包数量**: {{PACK_COUNT}} 个
+- **支持版本**: 1.12.2, 1.16, 1.18, 1.19, 1.20, 1.21 等
+
+## 目录结构
+```
+├── resource_pack/     # 资源包文件
+├── sha256/           # Commit哈希记录
+└── README.md         # 本文件
+```
+
+## 使用说明
+1. 下载对应版本的资源包
+2. 放入 Minecraft 的 resourcepacks 文件夹
+3. 在游戏中启用
+
+## 文件说明
+- 文件名格式: `Minecraft-Mod-Language-Package-版本-fabric.zip` (Fabric版本)
+- 文件名格式: `Minecraft-Mod-Language-Package-版本.zip` (Forge版本)
+
+## 注意事项
+- 本仓库自动更新，如需特定版本请及时下载
+- 如遇问题，请提交 Issue
+
+---
+
+> 本仓库由 GitHub Actions 自动维护
+EOF
           
-          # 或者如果使用其他标记，比如：最后更新：AUTO_UPDATE_TIME
-          sed -i "s/最后更新：AUTO_UPDATE_TIME/最后更新：$CURRENT_TIME/g" README.md
-          
-          # 检查是否有更改
-          if ! diff README.md README.md.backup > /dev/null; then
-            echo "README updated successfully"
-            echo "readme_updated=true" >> $GITHUB_OUTPUT
-          else
-            echo "README not changed (timestamp already up to date)"
-            echo "readme_updated=false" >> $GITHUB_OUTPUT
-          fi
+          echo "template_created=true" >> $GITHUB_OUTPUT
         else
-          echo "README.md not found, creating one with timestamp"
-          echo "# Resource Pack Repository" > README.md
-          echo "" >> README.md
-          echo "最后更新时间：$CURRENT_TIME" >> README.md
-          echo "" >> README.md
-          echo "此仓库存储 Minecraft 模组汉化资源包，由 GitHub Actions 每两小时自动更新。" >> README.md
-          echo "readme_updated=true" >> $GITHUB_OUTPUT
+          echo "template_created=false" >> $GITHUB_OUTPUT
+        fi
+        
+        # 统计资源包数量
+        if [ -d "resource_pack" ]; then
+          PACK_COUNT=$(ls -1 resource_pack/*.zip 2>/dev/null | wc -l)
+        else
+          PACK_COUNT=0
+        fi
+        
+        # 生成 README.md
+        if [ -f "README_TEMPLATE.md" ]; then
+          # 使用 sed 替换模板变量
+          sed -e "s/{{UPDATE_TIME}}/$CURRENT_TIME/g" \
+              -e "s/{{PACK_COUNT}}/$PACK_COUNT/g" \
+              README_TEMPLATE.md > README.md
+          
+          echo "README generated from template"
+          echo "readme_generated=true" >> $GITHUB_OUTPUT
+        else
+          echo "README_TEMPLATE.md still missing, skipping generation"
+          echo "readme_generated=false" >> $GITHUB_OUTPUT
         fi
     
     - name: Check for changes
       id: check-changes
       run: |
-        # 检查是否有文件更改（包括爬虫下载的文件和 README）
-        if git diff --quiet; then
+        # 检查是否有文件更改
+        if git diff --quiet && [ "${{ steps.run-crawler.outputs.resource_pack_changed }}" = "false" ] && [ "${{ steps.generate-readme.outputs.template_created }}" = "false" ]; then
           echo "No changes detected"
           echo "has_changes=false" >> $GITHUB_OUTPUT
         else
@@ -102,12 +145,26 @@ jobs:
         # 添加所有更改的文件
         git add -A
         
-        # 获取当前时间用于提交信息
+        # 获取提交信息
         export TZ='Asia/Shanghai'
         CURRENT_TIME=$(date +'%Y-%m-%d %H:%M:%S')
         
+        # 构建提交信息
+        COMMIT_MSG="🔄 自动更新: $CURRENT_TIME"
+        
+        # 添加详细说明
+        if [ "${{ steps.run-crawler.outputs.resource_pack_changed }}" = "true" ]; then
+          COMMIT_MSG="$COMMIT_MSG - 资源包更新"
+        fi
+        
+        if [ "${{ steps.generate-readme.outputs.template_created }}" = "true" ]; then
+          COMMIT_MSG="$COMMIT_MSG - 模板创建"
+        elif [ "${{ steps.generate-readme.outputs.readme_generated }}" = "true" ]; then
+          COMMIT_MSG="$COMMIT_MSG - README生成"
+        fi
+        
         # 提交更改
-        git commit -m "🔄 自动更新数据: $(date +'%Y-%m-%d %H:%M:%S')" || echo "没有需要提交的更改"
+        git commit -m "$COMMIT_MSG"
         
         # 推送到仓库
         git push

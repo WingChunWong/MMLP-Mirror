@@ -7,10 +7,6 @@ on:
   
   # 允许手动触发
   workflow_dispatch:
-  
-  # 当代码推送到 main 分支时也运行（可选）
-  push:
-    branches: [ main ]
 
 permissions:
   contents: write

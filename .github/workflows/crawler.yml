@@ -3,7 +3,7 @@ name: Auto Update Resource Pack
 on:
   # 每两小时运行一次
   schedule:
-    - cron: '0 */2 * * *'
+    - cron: '0 */8 * * *'
   
   # 允许手动触发
   workflow_dispatch:

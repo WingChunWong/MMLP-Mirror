@@ -29,7 +29,7 @@ MMLP-Mirror/
 
 ## 文件说明
 - 文件名格式: `Minecraft-Mod-Language-Package-版本-fabric.zip` (Fabric版本)
-- 文件名格式: `Minecraft-Mod-Language-Package-版本.zip` (Forge版本)
+- 文件名格式: `Minecraft-Mod-Language-Package-版本.zip` (Neo/Forge版本)
 
 ---
 

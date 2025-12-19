@@ -25,87 +25,103 @@ LOG_CONFIG = {
 }
 
 def log(message, level="INFO"):
-    """
-    输出格式化的日志信息
-    
-    Args:
-        message: 日志内容
-        level: 日志级别 (ERROR/SUCCESS/INFO/DEBUG/DETAIL)
-    """
+    """输出格式化的日志信息"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     color, level_name = LOG_CONFIG.get(level.upper(), (LogColor.YELLOW, "INFO"))
     print(f"{color}[{timestamp}] [{level_name}] - {message}{LogColor.RESET}")
 
-# ===================== 计算哈希 =====================
-
+# ===================== MD5相关功能 =====================
 def calculate_file_md5(file_path):
-    """计算资源包的MD5哈希值"""
+    """计算本地文件的MD5哈希值"""
+    if not os.path.exists(file_path):
+        log(f"文件不存在，无法计算MD5: {file_path}", "ERROR")
+        return None
+    
     md5_hash = hashlib.md5()
     try:
         with open(file_path, "rb") as f:
             for chunk in iter(lambda: f.read(4096), b""):
                 md5_hash.update(chunk)
         return md5_hash.hexdigest()
-    except FileNotFoundError:
-        return None
     except Exception as e:
         log(f"计算MD5失败: {e}", "ERROR")
         return None
-    
-def save_md5_hash(file_path, version, is_fabric):
-    """计算并保存文件的MD5哈希值"""
-    md5_value = calculate_file_md5(file_path)
-    if md5_value:
-        md5_filename = f"{version}-fabric.md5" if is_fabric else f"{version}.md5"
-        md5_file = os.path.join(RESOURCE_PACK_DIR, md5_filename)
-        
-        try:
-            with open(md5_file, 'w') as f:
-                f.write(md5_value)
-            log(f"MD5文件保存成功: {md5_file}", "SUCCESS")
-            return md5_value
-        except Exception as e:
-            log(f"保存MD5文件失败: {e}", "ERROR")
-    return None
 
-def load_local_commit_hash(version, is_fabric):
-    """从本地文件加载保存的commit哈希"""
-    hash_filename = f"{version}-fabric.commit" if is_fabric else f"{version}.commit"
-    hash_file = os.path.join(COMMIT_HASH_DIR, hash_filename)
-    
-    if os.path.exists(hash_file):
-        try:
-            with open(hash_file, 'r') as f:
-                return f.read().strip()
-        except Exception as e:
-            log(f"读取本地commit哈希失败: {e}", "ERROR")
-    
-    return None
-
-def save_commit_hash(version, is_fabric, commit_hash):
-    """保存commit哈希到本地文件"""
-    hash_filename = f"{version}-fabric.commit" if is_fabric else f"{version}.commit"
-    hash_file = os.path.join(COMMIT_HASH_DIR, hash_filename)
+def download_remote_md5(version_original, is_fabric, base_url, resource_pack_dir):
+    """
+    从服务器下载对应的MD5文件内容，并将MD5文件保存到资源包目录
+    :param version_original: 原始带-的版本号
+    :param is_fabric: 是否为Fabric版本
+    :param base_url: 基础URL
+    :param resource_pack_dir: 资源包保存目录（用于保存MD5文件）
+    :return: 远程MD5值（字符串），失败返回None
+    """
+    # MD5文件名规则：1-xx.md5 / 1-xx-fabric.md5（完全保留-，不转.）
+    md5_filename = f"{version_with_dots}{'-fabric' if is_fabric else ''}.md5"
+    md5_url = f"{base_url}{md5_filename}"
+    # 构建MD5文件的本地保存路径
+    md5_save_path = os.path.join(resource_pack_dir, md5_filename)
     
     try:
-        with open(hash_file, 'w') as f:
-            f.write(commit_hash)
-        log(f"commit哈希保存成功: {hash_file}", "SUCCESS")
-    except Exception as e:
-        log(f"保存commit哈希失败: {e}", "ERROR")
+        response = requests.get(md5_url, timeout=30)
+        response.raise_for_status()
+        # 提取MD5值（去除空格/换行）
+        remote_md5 = response.text.strip()
+        
+        # ========== 新增：保存MD5文件到资源包目录 ==========
+        try:
+            with open(md5_save_path, 'w', encoding='utf-8') as f:
+                f.write(remote_md5)
+            log(f"成功保存MD5文件: {md5_save_path}", "DEBUG")
+        except Exception as e:
+            log(f"保存MD5文件失败 ({md5_save_path}): {e}", "ERROR")
+        # ==================================================
+        
+        log(f"成功下载远程MD5: {md5_filename} -> {remote_md5}", "DEBUG")
+        return remote_md5
+    except requests.exceptions.RequestException as e:
+        log(f"下载远程MD5失败 ({md5_url}): {e}", "ERROR")
+        return None
+
+def verify_file_md5(file_path, version_original, is_fabric, base_url, resource_pack_dir):
+    """
+    验证本地文件MD5与远程MD5是否一致（使用原始版本号）
+    :param resource_pack_dir: 资源包保存目录（传递给download_remote_md5用于保存MD5文件）
+    """
+    # 获取本地MD5
+    local_md5 = calculate_file_md5(file_path)
+    if not local_md5:
+        return False
+    
+    # 获取远程MD5（新增传递resource_pack_dir参数）
+    remote_md5 = download_remote_md5(version_original, is_fabric, base_url, resource_pack_dir)
+    if not remote_md5:
+        return False
+    
+    # 对比MD5（忽略大小写）
+    if local_md5.lower() == remote_md5.lower():
+        log(f"MD5校验通过: {os.path.basename(file_path)}", "SUCCESS")
+        return True
+    else:
+        log(f"MD5校验失败！本地: {local_md5} | 远程: {remote_md5}", "ERROR")
+        # 校验失败时删除损坏文件
+        try:
+            os.remove(file_path)
+            log(f"已删除损坏文件: {file_path}", "INFO")
+        except Exception as e:
+            log(f"删除损坏文件失败: {e}", "ERROR")
+        return False
 
 # ===================== 主程序 =====================
 # 常量定义
-BASE_URL = "https://cfpa.cyan.cafe/project-hex/"  # 列表页面
-RESOURCE_PACK_DIR = "resource_pack"               # 资源包保存目录
-COMMIT_HASH_DIR = "sha256"                        # commit哈希保存目录
+BASE_URL = "http://8.137.167.65:64684/"  # 目标下载地址
+RESOURCE_PACK_DIR = "resource_pack"       # 资源包保存目录
 
-# 修改正则表达式以匹配6位十六进制字符(根据实际文件名)
-FILE_PATTERN = r'Minecraft-Mod-Language-Package-(1\.\d+(?:\.\d+)?)(?:-fabric)?-([a-fA-F0-9]{6})\.zip'  # 文件名模式
+# 文件名匹配模式
+FILE_PATTERN = r'Minecraft-Mod-Language-Modpack-(1-\d+(?:-\d+)?)(-Fabric)?\.zip'
 
 # 创建保存目录
 os.makedirs(RESOURCE_PACK_DIR, exist_ok=True)
-os.makedirs(COMMIT_HASH_DIR, exist_ok=True)
 log("目录准备完成", "DEBUG")
 
 # 获取资源包列表页面
@@ -122,94 +138,75 @@ except requests.exceptions.RequestException as e:
 link_count = 0
 skipped_count = 0
 downloaded_count = 0
+verified_count = 0
 
 for link in soup.find_all('a'):
     href = link.get('href')
     
-    # 检查是否是资源包文件
-    if not href or "Minecraft-Mod-Language-Package-" not in href or not href.endswith('.zip'):
+    # 检查是否是目标资源包文件
+    if not href or "Minecraft-Mod-Language-Modpack-" not in href or not href.endswith('.zip'):
         continue
     
     link_count += 1
-    filename = href.split('/')[-1]
-    log(f"发现资源包: {filename}", "DEBUG")
+    # 完全保留服务器原始文件名，不做任何修改
+    original_filename = href.split('/')[-1]
+    log(f"发现资源包: {original_filename}", "DEBUG")
     
-    # 解析文件名
-    match = re.match(FILE_PATTERN, filename)
+    # 解析文件名（仅提取版本和Fabric标识，不转换版本号）
+    match = re.match(FILE_PATTERN, original_filename)
     if not match:
-        log(f"文件名格式错误: {filename}", "ERROR")
+        log(f"文件名格式不符合要求，跳过: {original_filename}", "ERROR")
         continue
     
-    version = match.group(1)          # 版本号
-    remote_commit_hash = match.group(2)  # commit哈希值
-    is_fabric = '-fabric' in filename  # 是否为fabric版本
+    version_original = match.group(1)     # 原始版本号（如1-12-2，保留-，不转.）
+    is_fabric = match.group(2) is not None  # 是否为Fabric版本
+    version_with_dots = version_original.replace ('-', '.')
     
-    log(f"解析结果 - 版本: {version}, commit哈希: {remote_commit_hash}, Fabric: {is_fabric}", "DETAIL")
+    # 移除了过滤1-12-2-Fabric文件的逻辑，所有版本都处理
+    log(f"解析结果 - 原始版本: {version_original}, Fabric: {is_fabric}", "DETAIL")
     
-    # 构建新文件名(去除commit哈希值)
-    new_filename = f"Minecraft-Mod-Language-Package-{version}"
-    if is_fabric:
-        new_filename += "-fabric"
-    new_filename += ".zip"
-    
-    # 构建完整URL
+    # 构建完整下载URL和本地保存路径（完全保留原始文件名）
     file_url = href if href.startswith('http') else f"{BASE_URL}{href}"
+    file_path = os.path.join(RESOURCE_PACK_DIR, original_filename)
     
-    # 检查本地是否已存在该文件
-    file_path = os.path.join(RESOURCE_PACK_DIR, new_filename)
-    
-    # 加载本地保存的commit哈希
-    local_commit_hash = load_local_commit_hash(version, is_fabric)
-    
-    if os.path.exists(file_path) and local_commit_hash:
-        # 检查commit哈希是否匹配
-        if local_commit_hash == remote_commit_hash:
-            log(f"文件已存在且commit哈希相同，跳过下载: {new_filename}", "INFO")
-            log(f"本地commit哈希: {local_commit_hash}", "DETAIL")
-            
-            # 即使跳过下载，也确保MD5文件存在
-            md5_filename = f"{version}-fabric.md5" if is_fabric else f"{version}.md5"
-            md5_file = os.path.join(RESOURCE_PACK_DIR, md5_filename)
-            if not os.path.exists(md5_file):
-                save_md5_hash(file_path, version, is_fabric)
-            
+    # 先检查文件是否存在，存在则验证MD5
+    if os.path.exists(file_path):
+        log(f"文件已存在，开始MD5校验: {original_filename}", "INFO")
+        # 新增传递RESOURCE_PACK_DIR参数
+        if verify_file_md5(file_path, version_original, is_fabric, BASE_URL, RESOURCE_PACK_DIR):
             skipped_count += 1
+            verified_count += 1
             continue
         else:
-            log(f"文件已存在但commit哈希不同，重新下载: {new_filename}", "INFO")
-            log(f"本地commit哈希: {local_commit_hash}, 远程commit哈希: {remote_commit_hash}", "DETAIL")
-    elif os.path.exists(file_path) and not local_commit_hash:
-        log(f"文件已存在但无commit哈希记录，重新下载: {new_filename}", "INFO")
-    else:
-        log(f"文件不存在，开始下载: {new_filename}", "INFO")
+            log(f"MD5校验失败，将重新下载: {original_filename}", "INFO")
     
-    # 下载文件
-    log(f"开始下载: {filename}", "INFO")
+    # 下载资源包文件（保留原始文件名）
+    log(f"开始下载资源包: {original_filename}", "INFO")
     try:
-        response = requests.get(file_url, timeout=30)
+        response = requests.get(file_url, timeout=30, stream=True)
         response.raise_for_status()
+        
+        # 分块保存文件（适合大文件，避免内存溢出）
+        with open(file_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        log(f"资源包下载完成: {file_path}", "SUCCESS")
+        downloaded_count += 1
     except requests.exceptions.RequestException as e:
-        log(f"下载失败 - 文件: {filename}, 错误: {e}", "ERROR")
+        log(f"资源包下载失败 ({file_url}): {e}", "ERROR")
+        # 清理未下载完成的文件
+        if os.path.exists(file_path):
+            os.remove(file_path)
         continue
     
-    # 保存文件
-    with open(file_path, 'wb') as f:
-        f.write(response.content)
-    log(f"文件保存成功: {file_path}", "SUCCESS")
-    downloaded_count += 1
-    
-    # 计算并保存MD5哈希
-    md5_value = save_md5_hash(file_path, version, is_fabric)
-    if md5_value:
-        log(f"MD5计算完成 - 文件: {new_filename}, MD5: {md5_value}", "INFO")
-    else:
-        log(f"无法计算下载文件的MD5: {new_filename}", "ERROR")
-    
-    # 保存commit哈希
-    save_commit_hash(version, is_fabric, remote_commit_hash)
+    # 下载完成后立即校验MD5（新增传递RESOURCE_PACK_DIR参数）
+    if verify_file_md5(file_path, version_original, is_fabric, BASE_URL, RESOURCE_PACK_DIR):
+        verified_count += 1
 
-# 输出统计信息
-log(f"处理完成，共发现 {link_count} 个资源包文件", "SUCCESS")
-log(f"下载了 {downloaded_count} 个文件，跳过了 {skipped_count} 个文件", "INFO")
-if skipped_count > 0:
-    log(f"跳过的文件: {skipped_count} 个", "DETAIL")
+# 输出统计信息（移除了忽略1-12-2-Fabric的统计项）
+log("="*50, "INFO")
+log(f"处理完成统计：", "SUCCESS")
+log(f"  - 发现资源包总数: {link_count}", "INFO")
+log(f"  - 成功下载文件数: {downloaded_count}", "INFO")
+log(f"  - 跳过的有效文件数: {skipped_count}", "INFO")
+log(f"  - MD5校验通过总数: {verified_count}", "INFO")

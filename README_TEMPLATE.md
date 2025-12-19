@@ -18,8 +18,8 @@ MMLP-Mirror/
 │   └── workflows/
 │       └── crawler.yml           # GitHub Actions 工作流配置
 └── resource_pack/                # Minecraft 资源包目录
-    ├── *.md5                     # 各版本MD5校验文件 (11个文件)
-    └── *.zip                     # 各版本资源包压缩文件 (10个文件)
+    ├── *.md5                     # 各版本MD5校验文件
+    └── *.zip                     # 各版本资源包压缩文件
 ```
 
 ## 使用说明

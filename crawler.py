@@ -25,104 +25,79 @@ LOG_CONFIG = {
 }
 
 def log(message, level="INFO"):
-    """输出格式化的日志信息"""
+    """
+    输出格式化的日志信息
+    
+    Args:
+        message: 日志内容
+        level: 日志级别 (ERROR/SUCCESS/INFO/DEBUG/DETAIL)
+    """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     color, level_name = LOG_CONFIG.get(level.upper(), (LogColor.YELLOW, "INFO"))
     print(f"{color}[{timestamp}] [{level_name}] - {message}{LogColor.RESET}")
 
-# ===================== MD5相关功能 =====================
 def calculate_file_md5(file_path):
-    """计算本地文件的MD5哈希值"""
-    if not os.path.exists(file_path):
-        log(f"文件不存在，无法计算MD5: {file_path}", "ERROR")
-        return None
-    
+    """计算文件的MD5哈希值"""
     md5_hash = hashlib.md5()
     try:
         with open(file_path, "rb") as f:
             for chunk in iter(lambda: f.read(4096), b""):
                 md5_hash.update(chunk)
-        return md5_hash.hexdigest()
+        return md5_hash.hexdigest().lower()  # 返回小写形式的MD5
+    except FileNotFoundError:
+        return None
     except Exception as e:
         log(f"计算MD5失败: {e}", "ERROR")
         return None
 
-def download_remote_md5(version_original, is_fabric, base_url, resource_pack_dir):
-    """
-    从服务器下载对应的MD5文件内容，并将MD5文件保存到资源包目录
-    :param version_original: 原始带-的版本号
-    :param is_fabric: 是否为Fabric版本
-    :param base_url: 基础URL
-    :param resource_pack_dir: 资源包保存目录（用于保存MD5文件）
-    :return: 远程MD5值（字符串），失败返回None
-    """
-    # MD5文件名规则：1-xx.md5 / 1-xx-fabric.md5（完全保留-，不转.）
-    md5_filename = f"{version_with_dots}{'-fabric' if is_fabric else ''}.md5"
-    md5_url = f"{base_url}{md5_filename}"
-    # 构建MD5文件的本地保存路径
-    md5_save_path = os.path.join(resource_pack_dir, md5_filename)
+def get_remote_md5(version, is_fabric):
+    """从服务器获取指定版本的MD5值"""
+    # 构建MD5文件名
+    version_for_md5 = version.replace('-', '.')  # 将1-xx-x转换为1.xx.x
+    md5_filename = f"{version_for_md5}-fabric.md5" if is_fabric else f"{version_for_md5}.md5"
+    md5_url = f"{BASE_URL}{md5_filename}"
     
     try:
+        log(f"尝试获取MD5文件: {md5_url}", "DEBUG")
         response = requests.get(md5_url, timeout=30)
         response.raise_for_status()
-        # 提取MD5值（去除空格/换行）
-        remote_md5 = response.text.strip()
+        remote_md5 = response.text.strip().lower()  # 转换为小写形式
         
-        # ========== 新增：保存MD5文件到资源包目录 ==========
-        try:
-            with open(md5_save_path, 'w', encoding='utf-8') as f:
-                f.write(remote_md5)
-            log(f"成功保存MD5文件: {md5_save_path}", "DEBUG")
-        except Exception as e:
-            log(f"保存MD5文件失败 ({md5_save_path}): {e}", "ERROR")
-        # ==================================================
-        
-        log(f"成功下载远程MD5: {md5_filename} -> {remote_md5}", "DEBUG")
-        return remote_md5
+        # 验证MD5格式
+        if re.match(r'^[a-fA-F0-9]{32}$', remote_md5):
+            log(f"成功获取远程MD5: {remote_md5[:16]}...", "SUCCESS")
+            return remote_md5
+        else:
+            log(f"远程MD5格式无效: {remote_md5}", "ERROR")
+            return None
     except requests.exceptions.RequestException as e:
-        log(f"下载远程MD5失败 ({md5_url}): {e}", "ERROR")
+        log(f"获取远程MD5失败: {e}", "ERROR")
         return None
 
-def verify_file_md5(file_path, version_original, is_fabric, base_url, resource_pack_dir):
-    """
-    验证本地文件MD5与远程MD5是否一致（使用原始版本号）
-    :param resource_pack_dir: 资源包保存目录（传递给download_remote_md5用于保存MD5文件）
-    """
-    # 获取本地MD5
-    local_md5 = calculate_file_md5(file_path)
-    if not local_md5:
-        return False
+def save_md5_file(version, is_fabric, md5_hash):
+    """保存MD5哈希到本地文件"""
+    # 构建MD5文件名
+    version_for_md5 = version.replace('-', '.')  # 将1-xx-x转换为1.xx.x
+    md5_filename = f"{version_for_md5}-fabric.md5" if is_fabric else f"{version_for_md5}.md5"
+    md5_file = os.path.join(TARGET_DIR, md5_filename)
     
-    # 获取远程MD5（新增传递resource_pack_dir参数）
-    remote_md5 = download_remote_md5(version_original, is_fabric, base_url, resource_pack_dir)
-    if not remote_md5:
-        return False
-    
-    # 对比MD5（忽略大小写）
-    if local_md5.lower() == remote_md5.lower():
-        log(f"MD5校验通过: {os.path.basename(file_path)}", "SUCCESS")
+    try:
+        # 确保保存的是小写形式的MD5
+        with open(md5_file, 'w') as f:
+            f.write(md5_hash.lower())
+        log(f"MD5文件保存成功: {md5_file}", "SUCCESS")
         return True
-    else:
-        log(f"MD5校验失败！本地: {local_md5} | 远程: {remote_md5}", "ERROR")
-        # 校验失败时删除损坏文件
-        try:
-            os.remove(file_path)
-            log(f"已删除损坏文件: {file_path}", "INFO")
-        except Exception as e:
-            log(f"删除损坏文件失败: {e}", "ERROR")
+    except Exception as e:
+        log(f"保存MD5文件失败: {e}", "ERROR")
         return False
 
 # ===================== 主程序 =====================
 # 常量定义
-BASE_URL = "http://8.137.167.65:64684/"  # 目标下载地址
-RESOURCE_PACK_DIR = "resource_pack"       # 资源包保存目录
-
-# 文件名匹配模式
-FILE_PATTERN = r'Minecraft-Mod-Language-Modpack-(1-\d+(?:-\d+)?)(-Fabric)?\.zip'
+BASE_URL = "http://8.137.167.65:64684/"  # 服务器地址
+TARGET_DIR = "resource_pack"              # 保存目录
 
 # 创建保存目录
-os.makedirs(RESOURCE_PACK_DIR, exist_ok=True)
-log("目录准备完成", "DEBUG")
+os.makedirs(TARGET_DIR, exist_ok=True)
 
 # 获取资源包列表页面
 try:
@@ -138,75 +113,99 @@ except requests.exceptions.RequestException as e:
 link_count = 0
 skipped_count = 0
 downloaded_count = 0
-verified_count = 0
 
 for link in soup.find_all('a'):
     href = link.get('href')
     
-    # 检查是否是目标资源包文件
+    # 检查是否是资源包文件
     if not href or "Minecraft-Mod-Language-Modpack-" not in href or not href.endswith('.zip'):
         continue
     
     link_count += 1
-    # 完全保留服务器原始文件名，不做任何修改
-    original_filename = href.split('/')[-1]
-    log(f"发现资源包: {original_filename}", "DEBUG")
+    filename = href.split('/')[-1]
+    log(f"发现资源包: {filename}", "DEBUG")
     
-    # 解析文件名（仅提取版本和Fabric标识，不转换版本号）
-    match = re.match(FILE_PATTERN, original_filename)
+    # 解析文件名（新命名规则）
+    # 匹配格式: Minecraft-Mod-Language-Modpack-1-xx(-x)?(-Fabric)?.zip
+    # 其中(-x)?表示可能有第三个版本号，(-Fabric)?表示可能有Fabric标识
+    pattern = r'Minecraft-Mod-Language-Modpack-(1-\d+(?:-\d+)?)(-Fabric)?\.zip'
+    match = re.match(pattern, filename)
+    
     if not match:
-        log(f"文件名格式不符合要求，跳过: {original_filename}", "ERROR")
+        log(f"文件名格式错误: {filename}", "ERROR")
         continue
     
-    version_original = match.group(1)     # 原始版本号（如1-12-2，保留-，不转.）
-    is_fabric = match.group(2) is not None  # 是否为Fabric版本
-    version_with_dots = version_original.replace ('-', '.')
+    version = match.group(1)  # 版本号，如1-19或1-19-2
+    is_fabric = match.group(2) is not None  # 是否为fabric版本
     
-    # 移除了过滤1-12-2-Fabric文件的逻辑，所有版本都处理
-    log(f"解析结果 - 原始版本: {version_original}, Fabric: {is_fabric}", "DETAIL")
+    log(f"解析结果 - 版本: {version}, Fabric: {is_fabric}", "DETAIL")
     
-    # 构建完整下载URL和本地保存路径（完全保留原始文件名）
+    # 构建完整URL
     file_url = href if href.startswith('http') else f"{BASE_URL}{href}"
-    file_path = os.path.join(RESOURCE_PACK_DIR, original_filename)
     
-    # 先检查文件是否存在，存在则验证MD5
-    if os.path.exists(file_path):
-        log(f"文件已存在，开始MD5校验: {original_filename}", "INFO")
-        # 新增传递RESOURCE_PACK_DIR参数
-        if verify_file_md5(file_path, version_original, is_fabric, BASE_URL, RESOURCE_PACK_DIR):
-            skipped_count += 1
-            verified_count += 1
-            continue
-        else:
-            log(f"MD5校验失败，将重新下载: {original_filename}", "INFO")
+    # 检查本地是否已存在该文件
+    file_path = os.path.join(TARGET_DIR, filename)
     
-    # 下载资源包文件（保留原始文件名）
-    log(f"开始下载资源包: {original_filename}", "INFO")
-    try:
-        response = requests.get(file_url, timeout=30, stream=True)
-        response.raise_for_status()
-        
-        # 分块保存文件（适合大文件，避免内存溢出）
-        with open(file_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        log(f"资源包下载完成: {file_path}", "SUCCESS")
-        downloaded_count += 1
-    except requests.exceptions.RequestException as e:
-        log(f"资源包下载失败 ({file_url}): {e}", "ERROR")
-        # 清理未下载完成的文件
-        if os.path.exists(file_path):
-            os.remove(file_path)
+    # 获取远程MD5值
+    remote_md5 = get_remote_md5(version, is_fabric)
+    if not remote_md5:
+        log(f"无法获取远程MD5，跳过下载: {filename}", "ERROR")
         continue
     
-    # 下载完成后立即校验MD5（新增传递RESOURCE_PACK_DIR参数）
-    if verify_file_md5(file_path, version_original, is_fabric, BASE_URL, RESOURCE_PACK_DIR):
-        verified_count += 1
+    if os.path.exists(file_path):
+        # 计算本地文件的MD5
+        local_md5 = calculate_file_md5(file_path)
+        if local_md5:
+            # 检查MD5是否匹配（忽略大小写）
+            if local_md5.lower() == remote_md5.lower():
+                log(f"文件已存在且MD5相同，跳过下载: {filename}", "INFO")
+                log(f"本地MD5: {local_md5[:16]}..., 远程MD5: {remote_md5[:16]}...", "DETAIL")
+                
+                # 每次都要保存MD5文件，确保本地MD5文件是最新的
+                save_md5_file(version, is_fabric, remote_md5)
+                skipped_count += 1
+                continue
+            else:
+                log(f"文件已存在但MD5不同，重新下载: {filename}", "INFO")
+                log(f"本地MD5: {local_md5[:16]}..., 远程MD5: {remote_md5[:16]}...", "DETAIL")
+        else:
+            log(f"文件已存在但无法计算MD5，重新下载: {filename}", "INFO")
+    else:
+        log(f"文件不存在，开始下载: {filename}", "INFO")
+    
+    # 下载文件
+    log(f"开始下载: {filename}", "INFO")
+    try:
+        response = requests.get(file_url, timeout=30)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        log(f"下载失败 - 文件: {filename}, 错误: {e}", "ERROR")
+        continue
+    
+    # 保存文件
+    with open(file_path, 'wb') as f:
+        f.write(response.content)
+    log(f"文件保存成功: {file_path}", "SUCCESS")
+    downloaded_count += 1
+    
+    # 验证下载文件的MD5
+    file_md5 = calculate_file_md5(file_path)
+    if file_md5:
+        # 比较MD5时忽略大小写
+        if file_md5.lower() == remote_md5.lower():
+            log(f"MD5验证通过 - 文件: {filename}", "SUCCESS")
+            log(f"计算MD5: {file_md5[:16]}..., 期望MD5: {remote_md5[:16]}...", "DETAIL")
+            
+            # 保存MD5文件到资源包文件夹（每次下载后都保存）
+            save_md5_file(version, is_fabric, remote_md5)
+        else:
+            log(f"MD5验证失败 - 文件: {filename}", "ERROR")
+            log(f"计算MD5: {file_md5[:16]}..., 期望MD5: {remote_md5[:16]}...", "DETAIL")
+    else:
+        log(f"无法计算下载文件的MD5: {filename}", "ERROR")
 
-# 输出统计信息（移除了忽略1-12-2-Fabric的统计项）
-log("="*50, "INFO")
-log(f"处理完成统计：", "SUCCESS")
-log(f"  - 发现资源包总数: {link_count}", "INFO")
-log(f"  - 成功下载文件数: {downloaded_count}", "INFO")
-log(f"  - 跳过的有效文件数: {skipped_count}", "INFO")
-log(f"  - MD5校验通过总数: {verified_count}", "INFO")
+# 输出统计信息
+log(f"处理完成，共发现 {link_count} 个资源包文件", "SUCCESS")
+log(f"下载了 {downloaded_count} 个文件，跳过了 {skipped_count} 个文件", "INFO")
+if skipped_count > 0:
+    log(f"跳过的文件: {skipped_count} 个（MD5哈希未变化）", "DETAIL")

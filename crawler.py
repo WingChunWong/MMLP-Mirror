@@ -86,7 +86,7 @@ def generate_new_filename(version, is_fabric):
 BASE_URL = "https://cfpa.cyan.cafe/project-hex/"  # 列表页面
 RESOURCE_PACK_DIR = "resource_pack"               # 资源包保存目录
 
-# 修改正则表达式以匹配6位十六进制字符(根据实际文件名)
+# 文件名正则式
 FILE_PATTERN = r'Minecraft-Mod-Language-Package-(1\.\d+(?:\.\d+)?)(?:-fabric)?-([a-fA-F0-9]{6})\.zip'  # 文件名模式
 
 # 创建保存目录
@@ -126,10 +126,9 @@ for link in soup.find_all('a'):
         continue
     
     version = match.group(1)          # 版本号
-    remote_commit_hash = match.group(2)  # commit哈希值
     is_fabric = '-fabric' in filename  # 是否为fabric版本
     
-    log(f"解析结果 - 版本: {version}, commit哈希: {remote_commit_hash}, Fabric: {is_fabric}", "DETAIL")
+    log(f"解析结果 - 版本: {version}, Fabric: {is_fabric}", "DETAIL")
     
     # 生成新的文件名格式
     new_filename = generate_new_filename(version, is_fabric)
@@ -142,7 +141,7 @@ for link in soup.find_all('a'):
     
     # 检查本地文件是否存在
     if os.path.exists(file_path):
-        # 检查是否已有MD5文件（MD5文件名保持不变，使用原版本号）
+        # 检查是否已有MD5文件
         md5_filename = f"{version}-fabric.md5" if is_fabric else f"{version}.md5"
         md5_file = os.path.join(RESOURCE_PACK_DIR, md5_filename)
         
@@ -177,13 +176,13 @@ for link in soup.find_all('a'):
         log(f"下载失败 - 文件: {filename}, 错误: {e}", "ERROR")
         continue
     
-    # 保存文件（直接使用新文件名格式）
+    # 保存文件
     with open(file_path, 'wb') as f:
         f.write(response.content)
     log(f"文件保存成功: {file_path}", "SUCCESS")
     downloaded_count += 1
     
-    # 计算并保存MD5哈希（MD5文件名保持不变，使用原版本号）
+    # 计算并保存MD5哈希
     md5_value = save_md5_hash(file_path, version, is_fabric)
     if md5_value:
         log(f"MD5计算完成 - 文件: {new_filename}, MD5: {md5_value}", "INFO")

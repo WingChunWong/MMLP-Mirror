@@ -1,9 +1,9 @@
 name: Auto Update Resource Pack
 
 on:
-  # 每两小时运行一次
+  # 每八小时运行一次
   schedule:
-    - cron: '0 */48 * * *'
+    - cron: '0 */8 * * *'
   
   # 允许手动触发
   workflow_dispatch:
@@ -36,8 +36,8 @@ jobs:
         run: |
           python crawler.py
           
-          # 检查是否有资源包被下载
-          if git status --porcelain | grep -E "resource_pack/|sha256/" | grep -v ".commit$" | grep -v ".md5$" | grep ".zip$"; then
+          # 检查是否有资源包或MD5文件被下载或更新
+          if git status --porcelain | grep -E "resource_pack/.*\.(zip|md5)$"; then
             echo "resource_pack_changed=true" >> $GITHUB_OUTPUT
           else
             echo "resource_pack_changed=false" >> $GITHUB_OUTPUT
@@ -58,7 +58,7 @@ jobs:
           CURRENT_TIME=$(date +'%Y-%m-%d %H:%M:%S UTC+8')
           echo "当前时间: $CURRENT_TIME"
           
-          # 统计资源包数量
+          # 统计资源包数量（只统计.zip文件）
           if [ -d "resource_pack" ]; then
             PACK_COUNT=$(ls -1 resource_pack/*.zip 2>/dev/null | wc -l)
           else
@@ -66,14 +66,117 @@ jobs:
           fi
           echo "资源包数量: $PACK_COUNT"
           
+          # 统计MD5文件数量
+          if [ -d "resource_pack" ]; then
+            MD5_COUNT=$(ls -1 resource_pack/*.md5 2>/dev/null | wc -l)
+          else
+            MD5_COUNT=0
+          fi
+          echo "MD5文件数量: $MD5_COUNT"
+          
+          # 生成资源包列表
+          PACK_LIST=""
+          if [ -d "resource_pack" ] && [ $PACK_COUNT -gt 0 ]; then
+            # 按修改时间倒序排列
+            for file in $(ls -t resource_pack/*.zip); do
+              filename=$(basename "$file")
+              # 获取文件大小
+              size=$(ls -lh "$file" | awk '{print $5}')
+              # 获取修改时间
+              mtime=$(date -r "$file" +'%Y-%m-%d %H:%M:%S')
+              
+              # 查找对应的MD5文件
+              base_name="${filename%.zip}"
+              md5_file="resource_pack/${base_name}.md5"
+              
+              if [ -f "$md5_file" ]; then
+                md5_value=$(cat "$md5_file" 2>/dev/null | head -c 12)
+                PACK_LIST="${PACK_LIST}- **${filename}** (${size}, 更新于 ${mtime}, MD5: \`${md5_value}...\`)"$'\n'
+              else
+                # 查找带有版本号的MD5文件
+                # 从文件名中提取版本号
+                if [[ "$filename" =~ Minecraft-Mod-Language-Modpack-(.*)\.zip ]]; then
+                  version_part="${BASH_REMATCH[1]}"
+                  # 如果是特殊版本（1.12.2）
+                  if [ "$filename" = "Minecraft-Mod-Language-Modpack.zip" ]; then
+                    version_part="1.12.2"
+                    # 尝试查找1.12.2的MD5文件
+                    for md5_file in resource_pack/1.12.2*.md5; do
+                      if [ -f "$md5_file" ]; then
+                        md5_value=$(cat "$md5_file" 2>/dev/null | head -c 12)
+                        PACK_LIST="${PACK_LIST}- **${filename}** (${size}, 更新于 ${mtime}, MD5: \`${md5_value}...\`)"$'\n'
+                        break
+                      fi
+                    done
+                    # 如果没找到MD5文件
+                    if [ -z "$md5_value" ]; then
+                      PACK_LIST="${PACK_LIST}- **${filename}** (${size}, 更新于 ${mtime})"$'\n'
+                    fi
+                  # 如果是普通版本
+                  elif [[ "$filename" =~ -Fabric\.zip$ ]]; then
+                    # 去除末尾的-Fabric
+                    version="${version_part%-Fabric}"
+                    # 将短横线转换回点
+                    version=$(echo "$version" | tr '-' '.')
+                    # 查找对应的MD5文件
+                    for md5_file in resource_pack/${version}-fabric.md5; do
+                      if [ -f "$md5_file" ]; then
+                        md5_value=$(cat "$md5_file" 2>/dev/null | head -c 12)
+                        PACK_LIST="${PACK_LIST}- **${filename}** (${size}, 更新于 ${mtime}, MD5: \`${md5_value}...\`)"$'\n'
+                        break
+                      fi
+                    done
+                    # 如果没找到MD5文件
+                    if [ -z "$md5_value" ]; then
+                      PACK_LIST="${PACK_LIST}- **${filename}** (${size}, 更新于 ${mtime})"$'\n'
+                    fi
+                  # 非Fabric版本
+                  else
+                    # 将短横线转换回点
+                    version=$(echo "$version_part" | tr '-' '.')
+                    # 查找对应的MD5文件
+                    for md5_file in resource_pack/${version}.md5; do
+                      if [ -f "$md5_file" ]; then
+                        md5_value=$(cat "$md5_file" 2>/dev/null | head -c 12)
+                        PACK_LIST="${PACK_LIST}- **${filename}** (${size}, 更新于 ${mtime}, MD5: \`${md5_value}...\`)"$'\n'
+                        break
+                      fi
+                    done
+                    # 如果没找到MD5文件
+                    if [ -z "$md5_value" ]; then
+                      PACK_LIST="${PACK_LIST}- **${filename}** (${size}, 更新于 ${mtime})"$'\n'
+                    fi
+                  fi
+                else
+                  PACK_LIST="${PACK_LIST}- **${filename}** (${size}, 更新于 ${mtime})"$'\n'
+                fi
+              fi
+            done
+          else
+            PACK_LIST="暂无资源包"
+          fi
+          
           # 检查README_TEMPLATE.md是否存在
           if [ -f "README_TEMPLATE.md" ]; then
             echo "找到README_TEMPLATE.md，正在更新README.md"
             
-            # 使用sed替换模板变量并生成README.md
-            sed -e "s/{{UPDATE_TIME}}/$CURRENT_TIME/g" \
-                -e "s/{{PACK_COUNT}}/$PACK_COUNT/g" \
-                README_TEMPLATE.md > README.md
+            # 创建临时文件并替换模板变量
+            cat README_TEMPLATE.md | \
+              sed "s/{{UPDATE_TIME}}/$CURRENT_TIME/g" | \
+              sed "s/{{PACK_COUNT}}/$PACK_COUNT/g" | \
+              sed "s/{{MD5_COUNT}}/$MD5_COUNT/g" > temp_readme.md
+            
+            # 将资源包列表添加到README.md
+            awk -v pack_list="$PACK_LIST" '
+              /{{PACK_LIST}}/ {
+                print pack_list
+                next
+              }
+              { print }
+            ' temp_readme.md > README.md
+            
+            # 清理临时文件
+            rm -f temp_readme.md
             
             echo "README.md已更新"
             echo "readme_updated=true" >> $GITHUB_OUTPUT
@@ -86,7 +189,7 @@ jobs:
         id: check-changes
         run: |
           # 检查是否有文件更改
-          if git diff --quiet && [ "${{ steps.run-crawler.outputs.resource_pack_changed }}" = "false" ]; then
+          if git diff --quiet && [ "${{ steps.run-crawler.outputs.resource_pack_changed }}" = "false" ] && [ "${{ steps.update-readme.outputs.readme_updated }}" = "false" ]; then
             echo "No changes detected"
             echo "has_changes=false" >> $GITHUB_OUTPUT
           else
@@ -96,6 +199,10 @@ jobs:
             # 显示更改的文件
             echo "Changed files:"
             git status --porcelain
+            
+            # 显示详细的更改内容
+            echo -e "\nDetailed changes:"
+            git diff --stat
           fi
       
       - name: Commit and push if changed
@@ -104,16 +211,22 @@ jobs:
           # 添加所有更改的文件
           git add -A
           
-          # 获取提交信息
+          # 设置时区为东八区（北京时间）
           export TZ='Asia/Shanghai'
-          CURRENT_TIME=$(date +'%Y-%m-%d %H:%M:%S')
+          CURRENT_TIME=$(date +'%Y-%m-%d %H:%M:%S UTC+8')
+          
+          # 获取更改的文件列表
+          CHANGED_FILES=$(git status --porcelain | awk '{print $2}' | head -10 | tr '\n' ',' | sed 's/,$//')
           
           # 构建提交信息
           COMMIT_MSG="🔄 自动更新: $CURRENT_TIME"
           
           # 添加详细说明
           if [ "${{ steps.run-crawler.outputs.resource_pack_changed }}" = "true" ]; then
-            COMMIT_MSG="$COMMIT_MSG - 资源包更新"
+            COMMIT_MSG="$COMMIT_MSG - 资源包/MD5更新"
+            if [ -n "$CHANGED_FILES" ]; then
+              COMMIT_MSG="$COMMIT_MSG ($CHANGED_FILES)"
+            fi
           fi
           
           if [ "${{ steps.update-readme.outputs.readme_updated }}" = "true" ]; then
